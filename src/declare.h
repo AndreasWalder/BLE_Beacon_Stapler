@@ -1,15 +1,9 @@
-#include <BLEDevice.h>
-#include <BLEServer.h>
-#include <BLEUtils.h>
-#include <BLE2902.h>
-#include <BLEBeacon.h>
+#include <Arduino.h>
+#include <esp_adc_cal.h>
+#include <driver/adc.h>
 #include "heltec.h"
-
-bool deviceConnected = false;
-bool oldDeviceConnected = false;
-uint8_t txValue = 0;
-
-BLEServer *pServer;
-BLEAdvertising *pAdvertising;
-BLEBeacon oBeacon;
-BLECharacteristic * pTxCharacteristic;
+#include "TaskScheduler.h" //Task Scheduler
+#include "Settings.h" //Einstellungen
+#include "CheckBattery.h" //Batterie Auswertung und Anzeige %
+#include "LiebherrLogo.h" //Liebherr Logo
+#include "Setup.h" //Arduino Setup

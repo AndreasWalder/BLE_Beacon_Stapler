@@ -1,138 +1,809 @@
-#include <Arduino.h>
-#include <declare.h> //Includes und Variablen
-#include <Settings.h> //Einstellungen
-#include <ReverseUUID.h> // UUID richtig stellen
-#include <LiebherrLogo.h> //Liebherr Logo
-#include <Beacon.h>
-#include <Setup.h> //Arduino 
+#include "declare.h" //Includes und Variablen
 
-void IncludeSetup(); 
-void initBle(); 
+int a = 0;
+int b = 0;
+bool auswahlSelected = false;
+SemaphoreHandle_t semaphore = nullptr;
+unsigned long Zeit = 0;
+unsigned long VorherigeMillis = 0;
+const long interval1 = 1000;
+const long interval2 = 180000;
 
+String Geraet1 = "LK.. / LG.."; 
+String Geraet2 = "MK..       ";
+String Geraet3 = "L.. NIHON  "; 
 
+int test = 0;
+int auswahl = 0;
+bool auswahlOK = true;
+bool auswahlOK1 = false;
 void setup() {
   IncludeSetup();
-  initBle(); 
+  semaphore = xSemaphoreCreateBinary();
+	
+	// Setup the button GPIO pin
+	gpio_pad_select_gpio(GPIO_NUM_0);
+	
+	// Quite obvious, a button is a input
+	gpio_set_direction(GPIO_NUM_0, GPIO_MODE_INPUT);
+	
+	// Trigger the interrupt when going from HIGH -> LOW ( == pushing button)
+	gpio_set_intr_type(GPIO_NUM_0, GPIO_INTR_NEGEDGE);
+	
+	// Associate button_task method as a callback
+	xTaskCreate(button_task, "button_task", 4096, NULL, 10, NULL);
+	
+	// Install default ISR service 
+	gpio_install_isr_service(0);
+	
+	// Add our custom button handler to ISR
+	gpio_isr_handler_add(GPIO_NUM_0, handler, NULL);
 }
 
-class MyCallbacks: public BLECharacteristicCallbacks {
-    void onWrite(BLECharacteristic *pCharacteristic) {
-      std::string rxValue = pCharacteristic->getValue();
+void loop() 
+{
+  runner.execute();
+  if (auswahlOK1 == false)
+         {
+           Serial.println("Test auswahlSelected"); 
+           auswahlOK = true;
+           t2.enable();
+            AuswahlNext();
+         }   
+}
 
-      if (rxValue.length() > 0) {
-        Serial.println("*********");
-        Serial.print("Erhaltener Wert: ");
-        
-        for (int i = 0; i < rxValue.length(); i++) {
-          Serial.print(rxValue[i]);  
-          Value += rxValue[i]; 
-        }               
-        Serial.println();
-        Serial.println("*********"); 
-      }
+void t1Callback() {
+     BatteryCheck();
+}
+
+void t2Callback() {
+  if (auswahlSelected == false)
+  {
+    if (BatteryVoltage < LOWBATT && BatteryVoltage > MINBATT)
+    {
+      InitBattery();
+      i = 10;
+      t1.enable();
+      t2.disable();
+      t3.enable();
+      return;
     }
-};
+    Serial.println("Auswahl1");
+    auswahlSelected = true;
+    t1.disable();
+    t2.disable();
+    t3.disable();
+    Serial.println("Auswahl2");
+    Heltec.display->sleep();
+    Heltec.display->wakeup();
+    Heltec.display->init();
+    Heltec.display->setColor(WHITE);
+    Heltec.display->setFont(ArialMT_Plain_16);
+    Heltec.display->setTextAlignment(TEXT_ALIGN_CENTER);
+    Heltec.display->clear(); //OLET löschen
+    Heltec.display->flipScreenVertically();
+    Heltec.display->display(); //OLET anzeigen
+    Heltec.display->drawString(55, 1, Geraet1 + " <");
+    Heltec.display->drawString(46, 23, Geraet2);
+    Heltec.display->drawString(55, 46, Geraet3);
+    Heltec.display->display(); //OLET anzeigen  
+    auswahl = 1;
+    test = 2; 
+    Auswahl();
+  }
+}
 
-class MyServerCallbacks: public BLEServerCallbacks {
-    void onConnect(BLEServer* pServer) {
-      deviceConnected = true;
-    };
+void t3Callback() { 
+   SleepCheck();
+}
 
-    void onDisconnect(BLEServer* pServer) {
-      deviceConnected = false;
-    }
-};
+void callback(){
+}
 
-void initBle() {
-  // Create the BLE Device
-  BLEDevice::init("Stapler 1 Beacon");
-  // Create the BLE Server
-  pServer = BLEDevice::createServer(); 
-  //Setting to +7dbm will actually result to +9dbm
-  //BLEDevice::setPower(ESP_PWR_LVL_P7); //Setting to +7dbm will actually result to +9dbm
-  pServer->setCallbacks(new MyServerCallbacks());
-  // Create the BLE Service
-  BLEService *pService = pServer->createService(SERVICE_UUID);
+void SleepCheck()
+{
+  Heltec.display->clear(); //OLET anzeigen  
+  Heltec.display->flipScreenVertically();
+  //Heltec.display->resetOrientation();
+  drawBattery(BatteryVoltage, BatteryVoltage < LIGHT_SLEEP_VOLTAGE);
+  Heltec.display->setFont(ArialMT_Plain_10);
+  Heltec.display->setTextAlignment(TEXT_ALIGN_CENTER);
+  Heltec.display->drawString(15, 3, "V1.0");
 
-  // Create a BLE Characteristic
-  pTxCharacteristic = pService->createCharacteristic(CHARACTERISTIC_UUID_TX,BLECharacteristic::PROPERTY_NOTIFY);
-  pTxCharacteristic->addDescriptor(new BLE2902());
-  BLECharacteristic * pRxCharacteristic = pService->createCharacteristic(CHARACTERISTIC_UUID_RX,BLECharacteristic::PROPERTY_WRITE);
+  Heltec.display->setFont(ArialMT_Plain_16);
+  Heltec.display->setTextAlignment(TEXT_ALIGN_CENTER);
+  Heltec.display->drawString(60, 27, "QM Check Box");
 
-  pRxCharacteristic->setCallbacks(new MyCallbacks());
-   // Starten Sie den Dienst
-  pService->start();
- 
-  // Create advertising manager
-  pAdvertising = pServer->getAdvertising();
-  // Stellen Sie die Beacon-Daten ein
-  oBeacon = setBeacon(oBeacon); 
-  // start Übertragung
-  pAdvertising->start();
-  
-  Serial.println("Stapler 1 Beacon gestartet");
-  Heltec.display->clear();
-  Heltec.display->drawString(0, 0, "Stapler 1 Beacon");
-  Heltec.display->drawString(0, 10, "Modus: Übertragung");
-  float power_val = oBeacon.getSignalPower(); 
-  char power_valstr[15];
-  dtostrf(power_val,7, 2, power_valstr);
-  Heltec.display->drawString(0, 30, "Power Level: " + String(power_valstr));
-  Heltec.display->drawString(0, 40, "Major: " + String(Major) + " / Minor: " +  String(Minor));
-  Heltec.display->drawString(0, 50, "UID: " + UUID_Real);
+  i--;
+  Serial.println(i);
+  Heltec.display->fillRect(10, 48, i, 15);
   Heltec.display->display();
-}
 
-void loop() {
-  
- if (deviceConnected) {
-        pTxCharacteristic->setValue(&txValue, 1);
-        pTxCharacteristic->notify();
-        txValue++;
-        
-        delay(10); // Der Bluetooth-Stack wird überlastet, wenn zu viele Pakete gesendet werden
-        Heltec.display->clear();
-        Heltec.display->drawString(0, 0,  "Stapler 1 Beacon");
-        Heltec.display->drawString(0, 10, "Modus: Einstellung");
-        Heltec.display->drawString(0, 30, "Erhaltener Wert:");
-        Heltec.display->drawString(0, 40, Value);
-        Heltec.display->display();
-        Heltec.display->display();
+  if (i == 2)
+  {
+    Heltec.display->clear(); //OLET anzeigen  
+    Heltec.display->flipScreenVertically();
+    //Heltec.display->resetOrientation();
+    Heltec.display->setColor(WHITE);
+    Heltec.display->setFont(ArialMT_Plain_16);
+    Heltec.display->setTextAlignment(TEXT_ALIGN_CENTER);
+    Heltec.display->drawString(65, 14, "Akku sparren");
+    Heltec.display->drawString(65, 30, "Legt sich schlafen!");
+    Heltec.display->display();
+    delay(3000);
+
+    touchAttachInterrupt(T2, callback, 40);
+    esp_sleep_enable_touchpad_wakeup();
+    
+    esp_deep_sleep_start();
+    i = 100;
+    return;
   }
 
-  // disconnecting
-  if (!deviceConnected && oldDeviceConnected) {
-        delay(500); // Geben Sie dem Bluetooth-Stack die Möglichkeit, die Dinge vorzubereiten
-        pServer->startAdvertising(); // Werbung neu starten
-        Serial.println("starte Übertragung");
-        Heltec.display->clear();
-        Heltec.display->drawString(0, 0, "Stapler 1 Beacon");
-        Heltec.display->drawString(0, 10, "Modus: Übertragung");
-        float power_val = oBeacon.getSignalPower(); 
-        char power_valstr[15];
-        dtostrf(power_val,7, 2, power_valstr);
-        Heltec.display->drawString(0, 30, "Power Level: " + String(power_valstr));
-        Heltec.display->drawString(0, 40, "Major: " + String(Major) + " / Minor: " +  String(Minor));
-        Heltec.display->drawString(0, 50, "UID: " + UUID_Real);
-        Heltec.display->display();
-        oldDeviceConnected = deviceConnected;
-    }
-    // connecting
-    if (deviceConnected && !oldDeviceConnected) {
-        // Mach hier Sachen beim Verbinden
-        Serial.println("stop Übertragung");
-        Heltec.display->clear();
-        Heltec.display->drawString(0, 0, "Stapler 1 Beacon");
-        Heltec.display->drawString(0, 10, "starte Einstellung ...");
-        Heltec.display->display();
-        delay(2000);
-        Value = "";
-        oldDeviceConnected = deviceConnected;
-    }
-    delay(1000);
-    //BLEDevice::setPower(ESP_PWR_LVL_P9); //Setting to +7dbm will actually result to +9dbm
+  Heltec.display->display(); //OLET anzeigen  
+}
 
-    esp_err_t errRc=esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_DEFAULT,ESP_PWR_LVL_P9);
-    esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, ESP_PWR_LVL_P9);
-    esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_SCAN ,ESP_PWR_LVL_P9); 
+void IRAM_ATTR handler(void* arg) {
+  xSemaphoreGiveFromISR(semaphore, NULL);
+}
+
+void button_task(void* arg) {for(;;) {
+    if(xSemaphoreTake(semaphore,portMAX_DELAY) == pdTRUE) {
+      if (auswahlOK1 == true ) return;
+      Serial.println("select button pushed!\n");
+         t1.disable();
+         t2.disable();
+         t3.disable();
+         Heltec.display->clear(); //OLET anzeigen  
+         Heltec.display->sleep();
+         Heltec.display->wakeup();
+         Heltec.display->init();
+         Heltec.display->init();
+         Heltec.display->setColor(WHITE);
+         Heltec.display->setFont(ArialMT_Plain_16);
+         Heltec.display->setTextAlignment(TEXT_ALIGN_CENTER);
+         Heltec.display->clear(); //OLET löschen
+         Heltec.display->flipScreenVertically();
+         Heltec.display->display(); //OLET anzeigen
+         if (auswahlSelected == false)
+         {
+           Serial.println("Test auswahlSelected"); 
+           auswahlOK = true;
+           t2.enable();
+           Auswahl();
+         }
+
+         
+   
+         if (test == 1)
+         {
+              Heltec.display->clear(); //OLET anzeigen  
+              Heltec.display->init();
+              Heltec.display->setColor(WHITE);
+              Heltec.display->setFont(ArialMT_Plain_16);
+              Heltec.display->setTextAlignment(TEXT_ALIGN_CENTER);
+              Heltec.display->clear(); //OLET löschen
+              Heltec.display->flipScreenVertically();
+              Heltec.display->drawString(55, 1, Geraet1 + " <");
+              Heltec.display->drawString(46, 23, Geraet2);
+              Heltec.display->drawString(55, 46, Geraet3);
+              auswahl = 1;           
+              Serial.println("Auswahl1"); 
+         }
+         if (test == 2)
+         {
+              Heltec.display->clear(); //OLET anzeigen  
+              Heltec.display->init();
+              Heltec.display->setColor(WHITE);
+              Heltec.display->setFont(ArialMT_Plain_16);
+              Heltec.display->setTextAlignment(TEXT_ALIGN_CENTER);
+              Heltec.display->clear(); //OLET löschen
+              Heltec.display->flipScreenVertically();
+              Heltec.display->drawString(55, 1, Geraet1);
+              Heltec.display->drawString(46, 23, Geraet2 + " <");
+              Heltec.display->drawString(55, 46, Geraet3);
+              auswahl = 2;
+              Serial.println("Auswahl2");
+         }
+         if (test == 3)
+         {
+              Heltec.display->clear(); //OLET anzeigen  
+              Heltec.display->init();
+              Heltec.display->setColor(WHITE);
+              Heltec.display->setFont(ArialMT_Plain_16);
+              Heltec.display->setTextAlignment(TEXT_ALIGN_CENTER);
+              Heltec.display->clear(); //OLET löschen
+              Heltec.display->flipScreenVertically();
+              Heltec.display->drawString(55, 1, Geraet1);
+              Heltec.display->drawString(46, 23, Geraet2);
+              Heltec.display->drawString(55, 46, Geraet3 + " <");
+              auswahl = 3;
+              Serial.println("Auswahl3");
+              test = 0;
+         }
+
+         test = test + 1;
+
+        Heltec.display->display(); //OLET anzeigen
+        sleep(1);
+
+         Heltec.display->display(); //OLET anzeigen    
+
+    }
+  }
+}
+
+void AuswahlNext()
+{
+  auswahlOK1 = true;
+
+  
+  while (auswahlOK1)
+  {
+   
+
+    Zeit = millis();
+    if (Zeit - VorherigeMillis >= interval1) {
+      VorherigeMillis = Zeit;
+      BatteryCheck();
+      SleepCheck();
+    } 
+
+    int PushButtonState = digitalRead(PushButtonPin);
+ 
+          //button being held for half second 
+          if (PushButtonState == LOW) 
+          { 
+              if (auswahl == 1)
+              {
+                  Serial.println("Auswahl: 1");
+                  FunctionCheck1();
+                  auswahlOK1 = false;
+              }
+              if (auswahl == 2)
+              {
+                  Serial.println("Auswahl: 2");
+                  FunctionCheck2();
+                  auswahlOK1 = false;
+              }
+              if (auswahl == 3)
+              {
+                  Serial.println("Auswahl: 3");
+                  FunctionCheck3();
+                  auswahlOK1 = false;
+              }
+              Heltec.display->display(); //OLET anzeigen  
+              sleep(1);
+          }
+  }
+}
+
+void Auswahl()
+{
+  if (auswahl == 0) return;
+  while (auswahlOK)
+  {
+    int PushButtonState = digitalRead(PushButtonPin);
+ 
+          //button being held for half second 
+          if (PushButtonState == LOW) 
+          { 
+              t1.disable();
+              if (auswahl == 1)
+              {
+                  Serial.println("Auswahl: 1");
+                  FunctionCheck1();
+                  auswahlOK = false;
+              }
+              if (auswahl == 2)
+              {
+                  Serial.println("Auswahl: 2");
+                  FunctionCheck2();
+                  auswahlOK = false;
+              }
+              if (auswahl == 3)
+              {
+                  Serial.println("Auswahl: 3");
+                  FunctionCheck3();
+                  auswahlOK = false;
+              }
+              BatteryCheck();
+              Heltec.display->display(); //OLET anzeigen  
+              sleep(1);
+          }
+
+        Zeit = millis();
+          
+         if (Zeit - VorherigeMillis >= interval2) {
+           VorherigeMillis = Zeit;
+           Heltec.display->clear(); //OLET anzeigen  
+           Heltec.display->flipScreenVertically();
+            //Heltec.display->resetOrientation();
+            Heltec.display->setColor(WHITE);
+            Heltec.display->setFont(ArialMT_Plain_16);
+            Heltec.display->setTextAlignment(TEXT_ALIGN_CENTER);
+            Heltec.display->drawString(65, 14, "Akku sparren");
+            Heltec.display->drawString(65, 30, "Legt sich schlafen!");
+            Heltec.display->display();
+            delay(3000);
+
+            touchAttachInterrupt(T2, callback, 40);
+            esp_sleep_enable_touchpad_wakeup();
+            
+            esp_deep_sleep_start();
+            if (BatteryVoltage < LOWBATT && BatteryVoltage > MINBATT)
+            {
+              i = 10;
+            } 
+            else
+            {
+              i = 100;
+            }
+            
+            return;
+         }    
+  }
+}
+
+void FunctionCheck1()
+{
+      t1.disable();
+      t2.disable();
+      t3.disable();
+      if (BatteryVoltage < LOWBATT && BatteryVoltage > MINBATT)
+      {
+        i = 10;
+      } 
+      else
+      {
+        i = 100;
+      }
+      Serial.println("Messung Läuft");
+      Heltec.display->sleep();
+      delay(300);
+      Heltec.display->wakeup();
+      Heltec.display->init();
+      Heltec.display->setColor(WHITE);
+      Heltec.display->setFont(ArialMT_Plain_24);
+      Heltec.display->setTextAlignment(TEXT_ALIGN_CENTER);
+      Heltec.display->clear(); //OLET löschen
+      Heltec.display->flipScreenVertically();
+      //Heltec.display->resetOrientation();
+      Heltec.display->display(); //OLET anzeigen
+      Heltec.display->drawString(65, 5, "Messung");
+      Heltec.display->drawString(68, 28, Geraet1);
+      Heltec.display->drawString(65, 5, "Messung");
+      Heltec.display->drawString(68, 28, Geraet1);
+      Heltec.display->display(); //OLET anzeigen  
+      for (size_t i = 20; i < 110; i++)
+      {
+
+         //Ergebnisse holen
+         extAlarmState = digitalRead(extAlarmPin);
+
+        ADC_VALUE1 = analogRead(Analog_channel_pin1);
+        Serial.print("ADC VALUE1 = ");
+        Serial.println(ADC_VALUE1);
+        delay(5);
+        voltage_value1 = (ADC_VALUE1 * 3.3 ) / (4095);
+        voltage_value1 = voltage_value1 * 2.24;
+        delay(5);
+
+        ADC_VALUE2 = analogRead(Analog_channel_pin2);
+        Serial.print("ADC VALUE2 = ");
+        Serial.println(ADC_VALUE2);
+        delay(5);
+        voltage_value2 = (ADC_VALUE2 * 3.3 ) / (4095);
+        voltage_value2 = voltage_value2 * 2.24;
+        delay(5);
+
+         
+
+         Heltec.display->drawString(i, 38, ".");
+         Heltec.display->display(); //OLET anzeigen 
+         Serial.print("Ext Alarm:"); 
+         Serial.println(extAlarmState);
+         Serial.print("RS485 Messpunkt1:");
+         Serial.println(voltage_value1);
+         Serial.print("RS485 Messpunkt2:");
+         Serial.println(voltage_value2);
+         delay(5);
+      }
+      
+      Heltec.display->sleep();
+      delay(1000);
+      Heltec.display->wakeup();
+      Heltec.display->init();
+      Heltec.display->setColor(WHITE);
+      Heltec.display->setFont(ArialMT_Plain_24);
+      Heltec.display->setTextAlignment(TEXT_ALIGN_CENTER);
+      Heltec.display->clear(); //OLET löschen
+      Heltec.display->flipScreenVertically();
+      //Heltec.display->resetOrientation();
+      Heltec.display->display(); //OLET anzeigen
+      Heltec.display->drawString(62, 19, "Ergebnisse");
+      Heltec.display->display(); //OLET anzeigen
+      delay(500);
+      Heltec.display->clear(); //OLET löschen
+
+     if (extAlarmState == false) {
+       if (ADC_VALUE1 == 0)
+       {
+          Heltec.display->drawString(69, 7, "keine");
+          Heltec.display->drawString(67, 28, "Spannung");
+          Heltec.display->display(); //OLET anzeigen   
+          ExtAlarmOK = false;
+          Heltec.display->display(); //OLET anzeigen
+          delay(1500);
+          Heltec.display->clear(); //OLET löschen
+          Heltec.display->display(); //OLET anzeigen
+          Serial.println("Weiter");
+          InitBattery();
+          t1.enable();
+          t2.enable();
+          t3.enable();
+          Heltec.display->display(); //OLET anzeigen   
+          ExtAlarmOK = false;
+          return;
+       }
+       else
+       {
+       Heltec.display->drawString(69, 7, "Alarm");
+       Heltec.display->drawString(71, 30, "OK");
+       Heltec.display->display(); //OLET anzeigen   
+       ExtAlarmOK = true;
+       }
+     } 
+     else
+     {
+       Heltec.display->drawString(69, 7, "Alarm");
+       Heltec.display->drawString(68, 30, "Fehler");
+       Heltec.display->display(); //OLET anzeigen 
+       ExtAlarmOK = false;      
+     }
+       
+       delay(1000);
+       Heltec.display->clear(); //OLET löschen
+       Heltec.display->display(); //OLET anzeigen
+       delay(500);
+        
+        /*
+        Heltec.display->clear(); //OLET löschen
+        Heltec.display->drawString(69, 7, String(voltage_value1));
+        Heltec.display->drawString(68, 30, String(voltage_value2));
+        Heltec.display->display(); //OLET anzeigen
+        delay(1000);
+        */
+
+      if (voltage_value1 < 1.5 || voltage_value2 < 1.5) {   
+        Heltec.display->clear(); //OLET löschen
+        Heltec.display->drawString(69, 7, "RS485");
+        Heltec.display->drawString(68, 30, "Fehler");
+        Heltec.display->display(); //OLET anzeigen
+        RS485OK = false;
+      }
+      else
+      {
+        Heltec.display->clear(); //OLET löschen
+        Heltec.display->drawString(69, 7, "RS485");
+        Heltec.display->drawString(71, 30, "OK");
+        Heltec.display->display(); //OLET anzeigen
+        RS485OK = true;     
+      }
+      
+      delay(1000);
+      Heltec.display->clear(); //OLET löschen
+      Heltec.display->display(); //OLET anzeigen
+      Heltec.display->drawString(69, 19, "FERTIG!");
+      Heltec.display->display(); //OLET anzeigen
+      delay(1500);
+      Heltec.display->clear(); //OLET löschen
+      Heltec.display->display(); //OLET anzeigen
+      Serial.println("Weiter");
+      InitBattery();
+      t1.enable();
+      t2.enable();
+      t3.enable();
+      auswahlSelected = false;
+}
+
+void FunctionCheck2()
+{
+      t1.disable();
+      t2.disable();
+      t3.disable();
+      Serial.println("Messung Läuft");
+      Heltec.display->sleep();
+      delay(300);
+      Heltec.display->wakeup();
+      Heltec.display->init();
+      Heltec.display->setColor(WHITE);
+      Heltec.display->setFont(ArialMT_Plain_24);
+      Heltec.display->setTextAlignment(TEXT_ALIGN_CENTER);
+      Heltec.display->clear(); //OLET löschen
+      Heltec.display->flipScreenVertically();
+      //Heltec.display->resetOrientation();
+      Heltec.display->display(); //OLET anzeigen
+      Heltec.display->drawString(65, 5, "Messung");
+      Heltec.display->drawString(68, 28, Geraet2);
+      Heltec.display->drawString(65, 5, "Messung");
+      Heltec.display->drawString(68, 28, Geraet2);
+      Heltec.display->display(); //OLET anzeigen  
+      for (size_t i = 20; i < 110; i++)
+      {
+
+         //Ergebnisse holen
+         extAlarmState = digitalRead(extAlarmPin);
+
+        ADC_VALUE1 = analogRead(Analog_channel_pin1);
+        Serial.print("ADC VALUE1 = ");
+        Serial.println(ADC_VALUE1);
+        delay(5);
+        voltage_value1 = (ADC_VALUE1 * 3.3 ) / (4095);
+        voltage_value1 = voltage_value1 * 2.24;
+        delay(5);
+
+        ADC_VALUE2 = analogRead(Analog_channel_pin2);
+        Serial.print("ADC VALUE2 = ");
+        Serial.println(ADC_VALUE2);
+        delay(5);
+        voltage_value2 = (ADC_VALUE2 * 3.3 ) / (4095);
+        voltage_value2 = voltage_value2 * 2.24;
+        delay(5);
+
+         
+
+         Heltec.display->drawString(i, 38, ".");
+         Heltec.display->display(); //OLET anzeigen 
+         Serial.print("Ext Alarm:"); 
+         Serial.println(extAlarmState);
+         Serial.print("RS485 Messpunkt1:");
+         Serial.println(voltage_value1);
+         Serial.print("RS485 Messpunkt2:");
+         Serial.println(voltage_value2);
+         delay(5);
+      }
+      
+      
+     
+      Heltec.display->sleep();
+      delay(1000);
+      Heltec.display->wakeup();
+      Heltec.display->init();
+      Heltec.display->setColor(WHITE);
+      Heltec.display->setFont(ArialMT_Plain_24);
+      Heltec.display->setTextAlignment(TEXT_ALIGN_CENTER);
+      Heltec.display->clear(); //OLET löschen
+      Heltec.display->flipScreenVertically();
+      //Heltec.display->resetOrientation();
+      Heltec.display->display(); //OLET anzeigen
+      Heltec.display->drawString(62, 19, "Ergebnisse");
+      Heltec.display->display(); //OLET anzeigen
+      delay(500);
+      Heltec.display->clear(); //OLET löschen
+
+     
+     if (extAlarmState == true) {
+       if (ADC_VALUE1 == 0)
+       {
+          Heltec.display->drawString(69, 7, "keine");
+          Heltec.display->drawString(67, 28, "Spannung");
+          Heltec.display->display(); //OLET anzeigen   
+          ExtAlarmOK = false;
+          Heltec.display->display(); //OLET anzeigen
+          delay(1500);
+          Heltec.display->clear(); //OLET löschen
+          Heltec.display->display(); //OLET anzeigen
+          Serial.println("Weiter");
+          InitBattery();
+          t1.enable();
+          t2.enable();
+          t3.enable();
+          Heltec.display->display(); //OLET anzeigen   
+          ExtAlarmOK = false;
+          return;
+       }
+       else
+       {
+       Heltec.display->drawString(69, 7, "Alarm");
+       Heltec.display->drawString(71, 30, "OK");
+       Heltec.display->display(); //OLET anzeigen   
+       ExtAlarmOK = true;
+       }
+     } 
+     else
+     {
+       Heltec.display->drawString(69, 7, "Alarm");
+       Heltec.display->drawString(68, 30, "Fehler");
+       Heltec.display->display(); //OLET anzeigen 
+       ExtAlarmOK = false;      
+     }
+       
+       delay(1000);
+       Heltec.display->clear(); //OLET löschen
+       Heltec.display->display(); //OLET anzeigen
+       delay(500);
+        
+        /*
+        Heltec.display->clear(); //OLET löschen
+        Heltec.display->drawString(69, 7, String(voltage_value1));
+        Heltec.display->drawString(68, 30, String(voltage_value2));
+        Heltec.display->display(); //OLET anzeigen
+        delay(1000);
+        */
+
+      if (voltage_value1 < 1.5 || voltage_value2 < 1.5) {   
+        Heltec.display->clear(); //OLET löschen
+        Heltec.display->drawString(69, 7, "RS485");
+        Heltec.display->drawString(68, 30, "Fehler");
+        Heltec.display->display(); //OLET anzeigen
+        RS485OK = false;          
+      }
+      else
+      {
+        Heltec.display->clear(); //OLET löschen
+        Heltec.display->drawString(69, 7, "RS485");
+        Heltec.display->drawString(71, 30, "OK");
+        Heltec.display->display(); //OLET anzeigen
+        RS485OK = true;   
+      }
+      
+      delay(1000);
+      Heltec.display->clear(); //OLET löschen
+      Heltec.display->display(); //OLET anzeigen
+      Heltec.display->drawString(69, 19, "FERTIG!");
+      Heltec.display->display(); //OLET anzeigen
+      delay(1500);
+      Heltec.display->clear(); //OLET löschen
+      Heltec.display->display(); //OLET anzeigen
+      Serial.println("Weiter");
+      InitBattery();
+      t1.enable();
+      t2.enable();
+      t3.enable();
+      auswahlSelected = false;
+}
+
+
+void FunctionCheck3()
+{
+      t1.disable();
+      t2.disable();
+      t3.disable();
+      if (BatteryVoltage < LOWBATT && BatteryVoltage > MINBATT)
+      {
+        i = 10;
+      } 
+      else
+      {
+        i = 100;
+      }
+      Serial.println("Messung Läuft");
+      Heltec.display->sleep();
+      delay(300);
+      Heltec.display->wakeup();
+      Heltec.display->init();
+      Heltec.display->setColor(WHITE);
+      Heltec.display->setFont(ArialMT_Plain_24);
+      Heltec.display->setTextAlignment(TEXT_ALIGN_CENTER);
+      Heltec.display->clear(); //OLET löschen
+      Heltec.display->flipScreenVertically();
+      //Heltec.display->resetOrientation();
+      Heltec.display->display(); //OLET anzeigen
+      Heltec.display->drawString(65, 5, "Messung");
+      Heltec.display->drawString(68, 28, Geraet3);
+      Heltec.display->drawString(65, 5, "Messung");
+      Heltec.display->drawString(68, 28, Geraet3);
+      Heltec.display->display(); //OLET anzeigen  
+      for (size_t i = 20; i < 110; i++)
+      {
+
+         //Ergebnisse holen
+         extAlarmState = digitalRead(extAlarmPin);
+
+         Heltec.display->drawString(i, 38, ".");
+         Heltec.display->display(); //OLET anzeigen 
+         Serial.print("Ext Alarm:"); 
+         Serial.println(extAlarmState);
+         delay(7);
+      }
+      
+      Heltec.display->sleep();
+      delay(1000);
+      Heltec.display->wakeup();
+      Heltec.display->init();
+      Heltec.display->setColor(WHITE);
+      Heltec.display->setFont(ArialMT_Plain_24);
+      Heltec.display->setTextAlignment(TEXT_ALIGN_CENTER);
+      Heltec.display->clear(); //OLET löschen
+      Heltec.display->flipScreenVertically();
+      //Heltec.display->resetOrientation();
+      Heltec.display->display(); //OLET anzeigen
+      Heltec.display->drawString(62, 19, "Ergebnisse");
+      Heltec.display->display(); //OLET anzeigen
+      delay(500);
+      Heltec.display->clear(); //OLET löschen
+
+     if (extAlarmState == false) {
+       Heltec.display->drawString(69, 7, "Alarm");
+       Heltec.display->drawString(71, 30, "OK");
+       Heltec.display->display(); //OLET anzeigen   
+       ExtAlarmOK = true;
+     } 
+     else
+     {
+       Heltec.display->drawString(69, 7, "Alarm");
+       Heltec.display->drawString(68, 30, "Fehler");
+       Heltec.display->display(); //OLET anzeigen 
+       ExtAlarmOK = false;      
+     }
+       
+      delay(1000);
+      Heltec.display->clear(); //OLET löschen
+      Heltec.display->display(); //OLET anzeigen
+      delay(500);
+      
+      delay(1000);
+      Heltec.display->clear(); //OLET löschen
+      Heltec.display->display(); //OLET anzeigen
+      Heltec.display->drawString(69, 19, "FERTIG!");
+      Heltec.display->display(); //OLET anzeigen
+      delay(1500);
+      Heltec.display->clear(); //OLET löschen
+      Heltec.display->display(); //OLET anzeigen
+      Serial.println("Weiter");
+      InitBattery();
+      t1.enable();
+      t2.enable();
+      t3.enable();
+      auswahlSelected = false;
+}
+
+
+void BatteryCheck(){
+//a = a + 1;
+  //Serial.print("a");
+  //Serial.println(a);
+  BatteryVoltage = Sample();
+  delay(ADC_READ_STABILIZE);
+
+  if (BatteryVoltage < LOWBATT && BatteryVoltage > MINBATT)
+  { 
+    t3.disable();
+    Heltec.display->clear(); //OLET löschen
+    drawBattery(BatteryVoltage, BatteryVoltage < LIGHT_SLEEP_VOLTAGE);
+    Heltec.display->display(); //OLET anzeigen
+    Heltec.display->flipScreenVertically();
+    //Heltec.display->resetOrientation();
+    Heltec.display->setColor(WHITE);
+    Heltec.display->setFont(ArialMT_Plain_16);
+    Heltec.display->setTextAlignment(TEXT_ALIGN_CENTER);
+    Heltec.display->drawString(60, 29, "Zu wenig Akku");
+    Heltec.display->drawString(61, 46, "Bitte aufladen");
+    Heltec.display->display();
+    //Für die längere Anzeige (Zu wenig Akku!)
+    sleep(3);
+    return;
+  }else
+  {
+    t3.enable();
+  }
+  
+  if (BatteryVoltage < MINBATT)
+  { // Under Low BatteryVoltage cut off shut down to protect battery as long as possible
+    t3.disable();
+    Heltec.display->clear(); //OLET löschen
+    Heltec.display->display(); //OLET anzeigen
+    Heltec.display->flipScreenVertically();
+    //Heltec.display->resetOrientation();
+    Heltec.display->setColor(WHITE);
+    Heltec.display->setFont(ArialMT_Plain_16);
+    Heltec.display->setTextAlignment(TEXT_ALIGN_CENTER);
+    Heltec.display->drawString(60, 14, "Zu wenig Akku!!");
+    Heltec.display->drawString(64, 30, "Shutdown!!");
+    Heltec.display->display();
+    delay(10000);
+    esp_sleep_enable_timer_wakeup(LO_BATT_SLEEP_TIME);
+    esp_deep_sleep_start();
+  }
 }
